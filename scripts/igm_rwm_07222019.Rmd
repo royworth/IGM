@@ -28,7 +28,7 @@ library(dplyr)
 library(magrittr)
 library(ggplot2)
 library(ggExtra)
-library(rethinking)
+#library(rethinking)
 library(rstan)
 library(loo)
 

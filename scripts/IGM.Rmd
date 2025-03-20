@@ -33,6 +33,29 @@ MyNorm <- function(x) {
 
 options(mc.cores = parallel::detectCores())
 rstan_options(auto_write = TRUE)
+
+# Load model and data objects from drive for knitting (if they already exist)
+## vector of object names
+objs <- c("mix_fit_1",
+          "cmr_fit_1")
+
+N <- length(objs)
+
+# list of file paths for objects saved
+f <- list()
+for(i in 1:N){
+    f[i] <- paste0("./../modelFiles/",
+    objs[i], ".rda")
+    }
+
+# load files if they exist
+for(i in 1:N){
+  if(file.exists(f[[i]]))
+    load(f[[i]])
+}
+
+# clean up workspace
+rm(f, i, objs, N)
 ```
 
 # Simulate a mixture based on VB
@@ -41,7 +64,7 @@ Below we simulate a mixture of fish lengths based on a VB model for fish length 
 set.seed(1234)
 
 N <- 1000 # number of individual fish
-J <- 30 # number of sites fish belong to
+J <- 30 # number of hypothetical sampling sites fish belong to
 A <- 5 # maximum age for fish in model population
 
 theta <- nimble::rdirch(n =1, alpha = rev(seq(1:A)) * 500 ) # mixture probabilities: probability of belonging to length (age) class
@@ -101,12 +124,15 @@ for(n in 1:N){
 }
 ```
 
+Plot the simulated length-frequency
 ```{r plot_simulated_lengths, fig.align='center', fig.asp=0.75, fig.width=5}
 y %>%
   data.frame(length = y) %>%
   ggplot(aes(x = length)) + 
-  geom_histogram(binwidth = 5) +
-  ggtitle("Simulated length-frequency")
+  geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 5) +
+  ggtitle("Simulated length-frequency") +
+  ylab("Percent of total unique lengths") +
+  xlab("Length (mm)")
 ```
 
 # Mixture model for VB growth from lengths
@@ -194,8 +220,8 @@ model {
  }
  
 generated quantities {
- // for mixture we generate a component identifier "comp"
- // then draw "y_rep" using correct component
+ // Generate a component identifier "comp"
+ // then draw "y_rep" using correct components
  // for mu and sigma
  int <lower = 1, upper = A> comp[N];
  vector[N] y_rep;
@@ -237,11 +263,12 @@ stan_dataList_mix_fit <- list(N = N,
 ```
 
 ### Fit the model to simulated data
-```{r fit_stan_model_1, echo=TRUE, cache=TRUE}
+```{r fit_stan_model_1, eval=FALSE, include=TRUE}
+# takes about 692s
 mix_fit_1 <- sampling(object = mix,
                       data = stan_dataList_mix_fit,
                       chains = 4,
-                      iter = 2000,
+                      iter = 3000,
                       cores = 4,
                       thin = 1,
                       seed = 234#,
@@ -250,6 +277,8 @@ mix_fit_1 <- sampling(object = mix,
                       #  max_treedepth =12 #default= 10
                       #  )
                       )
+
+save(mix_fit_1, file = "./../modelFiles/mix_fit_1.rda")
 ```
 
 ### pairs plot of the posteriors
@@ -279,29 +308,84 @@ print(mix_fit_1,
       )
 ```
 
-### Compare model predictions to characteristics of simulated data
+### Estimates vs. true values
+Did we recover the parameters of the simulation? True values are the red vertical lines.
+```{r extract_posterior}
+la_mix_1 <- extract(mix_fit_1)
+```
+
+```{r posterior_vs_true_betas, echo=TRUE, fig.align='center', fig.asp = 0.5, fig.width=6}
+p <- la_mix_1$b0_L %>% data.frame() %>%
+  rename(b_L0 = X1, 
+         b_Linf = X2) %>%
+  mutate(b_k = la_mix_1$b0_k) %>%
+  pivot_longer(cols = c(b_L0, b_Linf, b_k),
+               names_to = "parameter",
+               values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 0.01) +
+  facet_wrap(~ parameter, scales = "free_x") +
+  ylab("Percent of total posterior draws")
+
+tv <- data.frame(parameter = c("b_L0", "b_Linf", "b_k"), tv = c(b0_L0, b0_Linf,  b0_k))
+p + geom_vline(aes(xintercept = tv), tv, color = "red", linewidth = 2)
+```
+
+```{r posterior_vs_true_sigma, echo=TRUE, fig.align='center', fig.asp = 0.5, fig.width=6}
+p <- la_mix_1$sigma_VB %>% data.frame() %>%
+  rename(sigma_L0 = X1, 
+         sigma_Linf = X2,
+         sigma_k = X3) %>%
+  mutate(sigma_y = la_mix_1$sigma) %>%
+  pivot_longer(cols = c(sigma_L0, sigma_Linf, sigma_k, sigma_y),
+               names_to = "parameter",
+               values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 0.0025) +
+  facet_wrap(~ parameter, scales = "free_x", ncol = 4) +
+  ylab("Percent of total posterior draws")
+
+tv <- data.frame(parameter = c("sigma_L0", "sigma_Linf", "sigma_k", "sigma_y"), tv = c(sigma_VB, sigma))
+p + geom_vline(aes(xintercept = tv), tv, color = "red", linewidth = 2)
+```
+
+```{r posterior_vs_true_omega, echo=TRUE, fig.align='center', fig.asp = 0.5, fig.width=6}
+p <- la_mix_1$Omega[, 1, 2] %>% data.frame() %>%
+  rename(Omega_b0_bLinf = ".") %>%
+  mutate(Omega_b0_bk = la_mix_1$Omega[, 1, 3],
+         Omega_bLinf_bk = la_mix_1$Omega[, 2, 3]) %>%
+  pivot_longer(cols = c(Omega_b0_bLinf, Omega_b0_bk, Omega_bLinf_bk),
+               names_to = "parameter",
+               values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 0.05) +
+  facet_wrap(~ parameter, scales = "free_x", ncol = 4) +
+  ylab("Percent of total posterior draws")
+
+tv <- data.frame(parameter = c("Omega_b0_bLinf", "Omega_b0_bk", "Omega_bLinf_bk"), tv = c(Omega[1,2], Omega[1,3], Omega[2,3]))
+p + geom_vline(aes(xintercept = tv), tv, color = "red", linewidth = 2)
+```
+
+### Compare predictions to characteristics of simulated data
 Compare posterior predictive distribution (black) to observed (simulated in this case) data distribution (red): 
 ```{r ppd_summary_1, echo=TRUE, fig.align='center', fig.asp = 0.6, fig.width=5}
-
-la_fit_1 <- rstan::extract(mix_fit_1) 
-
 bayesplot::ppc_stat(y = y, 
-                    yrep = la_fit_1$y_rep, 
+                    yrep = la_mix_1$y_rep, 
                     stat = mean,
                     binwidth = 1)
 
 bayesplot::ppc_stat(y = y, 
-                    yrep = la_fit_1$y_rep, 
+                    yrep = la_mix_1$y_rep, 
                     stat = sd,
                     binwidth = 1)
 
 bayesplot::ppc_stat(y = y, 
-                    yrep = la_fit_1$y_rep, 
+                    yrep = la_mix_1$y_rep, 
                     stat = max,
                     binwidth = 1)
 
 bayesplot::ppc_stat(y = y, 
-                    yrep = la_fit_1$y_rep, 
+                    yrep = la_mix_1$y_rep, 
                     stat = min,
                     binwidth = 1)
 
@@ -309,13 +393,13 @@ s <- as.vector(sample(1:length(y), 100, replace = F))#draw random 100 rows
 
 #bayesplot::ppc_dens_overlay( y = df_mixture$length , yrep = la_prior$y_rep_mix[ s , ] )
 
-bayesplot::ppc_intervals(y = y[s], yrep = la_fit_1$y_rep[, s])
+bayesplot::ppc_intervals(y = y[s], yrep = la_mix_1$y_rep[, s])
 
 rm(s)
 
-plot(density(la_fit_1$y_rep[1, ]), lwd = 2, main = "", ylim=c(0, 0.015), xlim=c(0, 500), col = 'gray')
+plot(density(la_mix_1$y_rep[1, ]), lwd = 2, main = "", ylim=c(0, 0.015), xlim=c(0, 500), col = 'gray')
 for (i in 1:200){
-  lines(density(la_fit_1$y_rep[sample(1:dim(la_fit_1$y_rep)[1], 1), ]), lwd=2, col = 'gray')
+  lines(density(la_mix_1$y_rep[sample(1:dim(la_mix_1$y_rep)[1], 1), ]), lwd=2, col = 'gray')
   }
 lines(density(y), col = 'red', lwd = 2)
 ```
@@ -330,15 +414,29 @@ log_lik_mix_1 <- loo::extract_log_lik(mix_fit_1 ,
 r_eff_mix_1 <- loo::relative_eff(log_lik_mix_1 , cores = 1)
 
 loo_mix_1 <- loo::loo(log_lik_mix_1, 
-                  r_eff= r_eff_mix_1, 
+                  r_eff= r_eff_mix_1,
+                  save_psis = TRUE,
                   cores = 1)
 print(loo_mix_1)
 
 plot(loo_mix_1 , label_points = T)
 ```
 
+#### LOO-PIT calibration
+Now lets use the loo calculations to graphically assess calibration. 
 
+First, we'll need to extract the weights from the LOO PSIS object.
+```{r extract_mix_1}
+wts_mix_1 <- weights(loo_mix_1$psis_object)
+```
 
+Now we can plot the LOO-PIT overlay. If well-calibrated, the PIT line should fall within the simulated draws of the uniform distribution (blue lines).
+```{r loo_pit_model_2, warning=FALSE, fig.align='center', fig.width=6, fig.asp=0.7}
+bayesplot::ppc_loo_pit_overlay(y = stan_dataList_mix_fit$y, 
+                    yrep = la_mix_1$y_rep,
+                    lw = wts_mix_1,
+                    samples = 50)
+```
 
 # Stan model for CMR data
 Now lets consider the CMR data only.
@@ -550,14 +648,14 @@ data{
  int< lower = 1 > N_mix; // n of obs (fish lengths - census data) data)
  int< lower = 1 > N_cmr; // number of observations (fish lengths - cmr data)
  int< lower= 1 > J; // number of sites
- int < lower=1 > site_mix[ N_mix ];
- int < lower=1 > site_cmr[ N_cmr ];
- vector[ N_cmr ] L_i;
- vector[ N_cmr ] days;
- vector[ N_mix ] y_mix;
- vector[ N_cmr ] y_cmr;
- real < lower=0 > eta; // parameter for LKJ prior
- vector < lower=0 > [ A ] alpha; // parameter for dirichlet prior
+ int < lower=1 > site_mix[N_mix];
+ int < lower=1 > site_cmr[N_cmr];
+ vector[N_cmr] L_i;
+ vector[N_cmr] days;
+ vector[N_mix] y_mix;
+ vector[N_cmr] y_cmr;
+ real <lower=0> eta; // parameter for LKJ prior
+ vector <lower=0> [A] alpha; // parameter for dirichlet prior
  int < lower=0 , upper=1 > prior_only; // =1 to get data from prior predictive
  }
 parameters{
