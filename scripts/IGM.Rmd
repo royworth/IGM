@@ -37,7 +37,8 @@ rstan_options(auto_write = TRUE)
 # Load model and data objects from drive for knitting (if they already exist)
 ## vector of object names
 objs <- c("mix_fit_1",
-          "cmr_fit_1")
+          "cmr_fit_1",
+          "igm_fit_1")
 
 N <- length(objs)
 
@@ -58,8 +59,26 @@ for(i in 1:N){
 rm(f, i, objs, N)
 ```
 
+# Background
+This markdown document outlines simulations of fish (1) length-frequency (LF) and (2) capture-mark-recapture (CMR) data based on models of von Bertalanffy (VB) growth.
+
+## Mixture
+The first simulation is of LF data from a mixture model conditional on a pre-specified number of "age" or growth classes. The mixture component means $\mu_a$ define the mean lengths for each class $a \in a = 1,..,A$ and are determined from the parameters of the VB growth equation, where $\mu_{a=1}$ is the mean for the earliest growth class and represents the VB parameter $L_0$ for initial length:
+
+$$\mu_{a=1} = L_0$$
+Subsequent class means are defined such that:
+$$\mu_{a = 2,..,A} = L_0 + (L_{\infty} - L_0) \times (1 - e^{-k(a - 1)})$$
+
+The likelihood for length indexed to each fish, $i \in i=1,..,N$, and site $j \in j=1,..,J$ :
+$$y_{ij} \sim N(\mu_{\alpha_j}, \sigma)$$
+$$\alpha_J \sim dirichlet (\theta_J)$$
+
+
+## Capture-mark-recapture
+The second simulation.
+
 # Simulate a mixture based on VB
-Below we simulate a mixture of fish lengths based on a VB model for fish length at age.
+Below we simulate a mixture of fish lengths based on a VB model for fish length at age/size-class. We simulate lengths for a pre-specified number $N$ of individual fish lengths divided amongst a pre-specified number of $J$ sites.
 ```{r simulate_VB_mixture}
 set.seed(1234)
 
@@ -67,10 +86,17 @@ N <- 1000 # number of individual fish
 J <- 30 # number of hypothetical sampling sites fish belong to
 A <- 5 # maximum age for fish in model population
 
-theta <- nimble::rdirch(n =1, alpha = rev(seq(1:A)) * 500 ) # mixture probabilities: probability of belonging to length (age) class
-class <- sample(1:A, size = N, prob = theta, replace = TRUE) # assign age class / draw which model each of 1,..,N fish  belongs to
-
+theta <- matrix(NA, J, A) # container for theta
+class <- rep(NA, N) # container for size class assigned
 site <- sample(1:J, size = N, replace = TRUE) # randomly assign fish to a site
+for (j in 1:J){
+  theta[j, ] <- nimble::rdirch(n =1, alpha = rev(seq(1:A)) * 500 ) # mixture probabilities: probability of belonging to length (age) class
+  }
+
+for (n in 1:N){
+  class[n] <- sample(1:A, size = 1, prob = theta[site[n], ], replace = TRUE) # assign age class that 1,..,N fish  belongs to
+  }
+
 y <- rep(NA, N) # container for fish lengths to be simulated
 
 b0_L0 <- log(25) # log-scale intercept term for initial length mm / L0
@@ -137,7 +163,7 @@ y %>%
 
 # Mixture model for VB growth from lengths
 Next we try to fit a model to the simulated data and recover the original fixed values for $\theta$ and the $\beta$ parameters.
-```{stan model_1, echo=TRUE, message=FALSE, warning=FALSE, output.var="mix"}
+```{stan model_1, eval=FALSE, include=TRUE, output.var="mix"}
 data {
  int <lower = 1> A; // number of mixture components (ages)
  int <lower = 1> N; // n of obs (fish lengths - census data) data)
@@ -151,18 +177,18 @@ data {
  
 parameters {
  simplex[A] theta [J]; // mixture proportions
- ordered [2] b0_L; // b0 for L0[1] and Linf[2]
- real b0_k;
+ vector [3] b0; // b0 for L0[1] and Linf[2] and k[3]
+ // real b0_k;
  real <lower = 0> sigma;
  vector <lower = 0> [3] sigma_VB;
- matrix[3 , J] r_z;
+ matrix[3, J] r_z;
  cholesky_factor_corr[3] L_Omega;
 }
 
 transformed parameters {
  matrix[J, 3] eps;
- //ordered[A] mu [J]; 
- matrix [J, A] mu;
+ ordered[A] mu [J]; 
+ //matrix [J, A] mu;
  vector [J] Linf;
  vector [J] k;
  vector [J] L0;
@@ -171,31 +197,31 @@ transformed parameters {
  eps = (diag_pre_multiply(sigma_VB, L_Omega) * r_z)'; 
 
 // linear predictors for sub-models of VB parameters 
- L0 = exp(b0_L[1] + col(eps , 1));
- Linf = exp(b0_L[2] + col(eps , 2));
- k = exp(b0_k + col(eps , 3));
+ L0 = exp(b0[1] + col(eps , 1));
+ Linf = exp(b0[2] + col(eps , 2));
+ k = exp(b0[3] + col(eps , 3));
  
- //for (j in 1:J) {
-   mu[, 1] = log(L0);
-   for (a in 2:A) {
-     mu[, a] = log(L0 + (Linf - L0) .* (1 - exp(-k .* (a - 1))));
+ for (j in 1:J) {
+   //mu[, 1] = log(L0);
+   for (a in 1:A) {
+     mu[j, a] = log(L0[j] + (Linf[j] - L0[j]) .* (1 - exp(-k[j] .* (a - 1))));
      }
-   //}
+   }
  }
  
 model {
  //priors
- target += normal_lpdf(b0_L[1] | 3, 0.5); // b0_L0
- target += normal_lpdf(b0_L[2] | 5.5, 0.25); // b0_Linf
- target += normal_lpdf(b0_k | -1, 0.5);
+ target += normal_lpdf(b0[1] | 3.5, 0.25); // b0_L0
+ target += normal_lpdf(b0[2] | 5, 0.1); // b0_Linf
+ target += normal_lpdf(b0[3] | -1, 0.5); // b0_k
  
- target += normal_lpdf(sigma_VB[1] | 0, 0.25); // Linf
- target += normal_lpdf(sigma_VB[2] | 0, 0.25); // k
- target += normal_lpdf(sigma_VB[3] | 0, 0.25); // L0
+ target += normal_lpdf(sigma_VB[1] | 0, 0.2); // L0
+ target += normal_lpdf(sigma_VB[2] | 0, 0.2); // Linf
+ target += normal_lpdf(sigma_VB[3] | 0, 0.2); // k
  
  target += normal_lpdf(to_vector(r_z) | 0, 1);
  
- target += normal_lpdf(sigma | 0, 0.5);
+ target += normal_lpdf(sigma | 0, 0.25);
  
  target += lkj_corr_cholesky_lpdf(L_Omega | eta);
  
@@ -210,7 +236,7 @@ model {
  
   for (n in 1:N) {
     for (a in 1:A) { 
-      lps[site[n], a] = log_theta[site[n], a] + lognormal_lpdf(y[n] | mu[site[n], a] , sigma);
+      lps[site[n], a] = log_theta[site[n], a] + lognormal_lpdf(y[n] | mu[site[n], a], sigma);
       }
       if (prior_only == 0){
         target += log_sum_exp(lps[site[n]]);
@@ -234,13 +260,13 @@ generated quantities {
  vector[A] lps [J];
 
   for (n in 1:N) {
+   comp[n] = categorical_rng(theta[site[n]]);
    for (a in 1:A) {
+     y_rep[n] = lognormal_rng(mu[site[n], comp[n]] , sigma);
      lps[site[n], a] = log_theta[site[n], a] + 
       lognormal_lpdf(y[n] | mu[site[n], a] , sigma);
      }
     log_lik[n] = log_sum_exp(lps[site[n]]);
-    comp[n] = categorical_rng(theta[site[n]]);
-    y_rep[n] = lognormal_rng(mu[site[n], comp[n]] , sigma);
    } 
   }
  }
@@ -264,7 +290,7 @@ stan_dataList_mix_fit <- list(N = N,
 
 ### Fit the model to simulated data
 ```{r fit_stan_model_1, eval=FALSE, include=TRUE}
-# takes about 692s
+# takes about 585s
 mix_fit_1 <- sampling(object = mix,
                       data = stan_dataList_mix_fit,
                       chains = 4,
@@ -286,9 +312,9 @@ save(mix_fit_1, file = "./../modelFiles/mix_fit_1.rda")
 np <- nuts_params(mix_fit_1)
 
 mcmc_pairs(mix_fit_1,
-           pars = c("b0_L[1]",
-                    "b0_L[2]",
-                    "b0_k",
+           pars = c("b0[1]",
+                    "b0[2]",
+                    "b0[3]",
                     "lp__"),
            regex_pars = "sigma",
            np = np,
@@ -299,8 +325,7 @@ mcmc_pairs(mix_fit_1,
 ### Tabular parameter summary
 ```{r print_summary_1, echo=TRUE}
 print(mix_fit_1, 
-      pars=c("b0_L",
-             "b0_k",
+      pars=c("b0",
              "sigma_VB",
              "sigma",
              "Omega",
@@ -315,10 +340,10 @@ la_mix_1 <- extract(mix_fit_1)
 ```
 
 ```{r posterior_vs_true_betas, echo=TRUE, fig.align='center', fig.asp = 0.5, fig.width=6}
-p <- la_mix_1$b0_L %>% data.frame() %>%
-  rename(b_L0 = X1, 
-         b_Linf = X2) %>%
-  mutate(b_k = la_mix_1$b0_k) %>%
+p <- la_mix_1$b0 %>% as_tibble(.name_repair = "unique") %>%
+  rename(b_L0 = ...1, 
+         b_Linf = ...2,
+         b_k = ...3) %>%
   pivot_longer(cols = c(b_L0, b_Linf, b_k),
                names_to = "parameter",
                values_to = "value") %>%
@@ -332,10 +357,10 @@ p + geom_vline(aes(xintercept = tv), tv, color = "red", linewidth = 2)
 ```
 
 ```{r posterior_vs_true_sigma, echo=TRUE, fig.align='center', fig.asp = 0.5, fig.width=6}
-p <- la_mix_1$sigma_VB %>% data.frame() %>%
-  rename(sigma_L0 = X1, 
-         sigma_Linf = X2,
-         sigma_k = X3) %>%
+p <- la_mix_1$sigma_VB %>% as_tibble(.name_repair = "unique") %>%
+  rename(sigma_L0 = ...1, 
+         sigma_Linf = ...2,
+         sigma_k = ...3) %>%
   mutate(sigma_y = la_mix_1$sigma) %>%
   pivot_longer(cols = c(sigma_L0, sigma_Linf, sigma_k, sigma_y),
                names_to = "parameter",
@@ -436,11 +461,25 @@ bayesplot::ppc_loo_pit_overlay(y = stan_dataList_mix_fit$y,
                     yrep = la_mix_1$y_rep,
                     lw = wts_mix_1,
                     samples = 50)
+
+bayesplot::ppc_loo_pit_qq(y = stan_dataList_mix_fit$y,
+                          yrep = la_mix_1$y_rep,
+                          lw = wts_mix_1,
+                          psis_object = loo_mix_1$psis_object
+                          )
+
+ppc_pit_ecdf(y = stan_dataList_mix_fit$y,
+                          yrep = la_mix_1$y_rep,
+                          lw = wts_mix_1,
+                          psis_object = loo_mix_1$psis_object
+                          )
 ```
+
+
 # Simulate CMR data based on VB
 This model conditions on observed length ("initial" length).
 ```{r simulate_VB_cmr}
-set.seed(1234)
+set.seed(1248)
 
 N <- 1000 # number of individual fish
 J <- 30 # number of hypothetical sampling sites fish belong to
@@ -509,8 +548,7 @@ y %>%
 ```
 
 # Stan model for CMR data
-Now lets consider the CMR data only.
-```{stan model_2, echo=TRUE, message=FALSE, warning=FALSE, output.var="cmr"}
+```{stan model_2, eval=FALSE, include=TRUE, output.var="cmr"}
 data {
  int<lower = 1> N; // number of observations (fish lengths - cmr data)
  int<lower= 1> J; // number of sites
@@ -596,7 +634,7 @@ stan_dataList_cmr_fit <- list(N  = N,
 ```
 
 ### Run the model with observational data
-```{r fit_stan_model_2, echo=TRUE, cache=TRUE}
+```{r fit_stan_model_2, eval=FALSE, include=TRUE}
 # takes about 98s
 cmr_fit_1 <- sampling(object = cmr,
                         data = stan_dataList_cmr_fit,
@@ -609,6 +647,8 @@ cmr_fit_1 <- sampling(object = cmr,
                         #  max_treedepth =12 #default= 10
                         #  )
                         )
+
+save(cmr_fit_1, file = "./../modelFiles/cmr_fit_1.rda")
 ```
 
 ### pairs plot of the posteriors
@@ -728,7 +768,6 @@ lines(density(y), col = 'red', lwd = 2)
 
 ### Leave-one-out cross validation with PSIS-LOO
 ```{r loo_mix, fig.align='center', fig.height=4, fig.width=6 }
-
 log_lik_cmr_1 <- loo::extract_log_lik(cmr_fit_1 , 
                                   parameter_name="log_lik", 
                                   merge_chains = FALSE)
@@ -760,10 +799,11 @@ bayesplot::ppc_loo_pit_overlay(y = stan_dataList_cmr_fit$y,
                     samples = 50)
 ```
 
+
 # Stan model for integrated (mixture and cmr) VBGF
 Now lets integrate the two models (and data).
-```{stan model_3, echo=TRUE, message=FALSE, warning=FALSE, output.var="igm"}
-data{
+```{stan model_3, eval=FALSE, include=TRUE, output.var="igm"}
+data {
  int< lower = 1 > A; // number of mixture components (ages)
  int< lower = 1 > N_mix; // n of obs (fish lengths - census data) data)
  int< lower = 1 > N_cmr; // number of observations (fish lengths - cmr data)
@@ -778,364 +818,163 @@ data{
  vector <lower=0> [A] alpha; // parameter for dirichlet prior
  int < lower=0 , upper=1 > prior_only; // =1 to get data from prior predictive
  }
-parameters{
- simplex[ A ] theta [ J ]; // mixture proportions
- real z_b0_Linf;
- real z_b0_k;
- real z_b0_L0;
- matrix[ 3 , J ] r_z;
- vector < lower=0 > [ 3 ] z_sigma_VBG;
- cholesky_factor_corr[ 3 ] L_Omega_J;
- real < lower=0 > z_sigma_mix;
- real < lower=0 > z_sigma_cmr;
- }
-transformed parameters{
- real b0_Linf;
+parameters {
+ simplex[A] theta [J]; // mixture proportions
+ ordered [2] b0_L; // L[1] = L0 and L[2] = Linf
  real b0_k;
- real b0_L0;
- matrix[ J , 3 ] r;
- vector [ J ] Linf;
- vector [ J ] k;
- vector [ J ] L0;
- vector < lower=0 > [ 3 ] sigma_VBG;
- real < lower=0 > sigma_mix;
- real < lower=0 > sigma_cmr;
- ordered[ A ] mu_mix [ J ];
- vector [ N_cmr ] mu_cmr;
+ matrix[3, J] r_z;
+ vector <lower = 0> [3] sigma_VB;
+ cholesky_factor_corr[3] L_Omega;
+ real <lower = 0> sigma_mix;
+ real <lower = 0> sigma_cmr;
+ }
+transformed parameters {
+ matrix[J, 3] eps;
+ vector [J] L0;
+ vector [J] Linf;
+ vector [J] k;
+ matrix [J, A] mu_mix;
+ vector [N_cmr] mu_cmr;
  
- b0_Linf = 5.35 + z_b0_Linf * 0.2; //translated: N( 5.35 , 0.2 ) #5.4, 0.25
- b0_k = -0.5 + z_b0_k * 0.5; //translated: N( 0 , 0.5 ) #-0.7, 0.5
- b0_L0 = 3.5 + z_b0_L0 * 0.1; // translated: N( 3.5 , 0.1 ) #2.5, 0.5
+ eps = (diag_pre_multiply(sigma_VB, L_Omega) * r_z)'; // random effects Linf, k, and t0
  
- sigma_VBG[ 1 ] = z_sigma_VBG[ 1 ] * 0.3; // .3 translated: hN( 0 , 0.2 ) Linf
- sigma_VBG[ 2 ] = z_sigma_VBG[ 2 ] * 0.5; // .5 translated: N( 0 , 0.2 ) k
- sigma_VBG[ 3 ] = z_sigma_VBG[ 3 ] * 0.05; // translated: N( 0 , 0.05 ) L0
+// linear predictors for sub-models of VB parameters 
+ L0 = exp(b0_L[1] + col(eps , 1));
+ Linf = exp(b0_L[2] + col(eps , 2));
+ k = exp(b0_k + col(eps , 3));
  
- sigma_mix = z_sigma_mix * 0.1; //translated: hN( 0 , 0.1 )
- sigma_cmr = z_sigma_cmr * 0.1; //translated: hN( 0 , 0.1 )
- 
- r = ( diag_pre_multiply( sigma_VBG , L_Omega_J ) * r_z )'; // random effects Linf, k, and t0
- 
- Linf = exp( b0_Linf + col( r , 1 ) );
- k = exp( b0_k + col( r , 2 ) );
- L0 = exp( b0_L0 + col( r , 3 ) );
- 
- for ( j in 1:J ) {
-  mu_mix[ j , 1 ] = log( L0[ j ] );
-  for ( a in 2:A ) {
-   mu_mix[ j , a ] = log( L0[ j ] + ( Linf[ j ] - L0[ j ] ) .* ( 1.0 - exp( -k[ j ] .* ( a - 1 )  ) ) );
-   }
-  }
-  
- for ( c in 1:N_cmr ) {
-  mu_cmr[ c ] =  log(
-   L_i[ c ] + ( Linf[ site_cmr[ c ] ] - L_i[ c ] ) .* 
-    ( 1.0 - exp( -k[ site_cmr[ c ] ] .* ( days[ c ] / 365 ) ) ) );
+ mu_mix[, 1] = log(L0);
+   for (a in 2:A) {
+     mu_mix[, a] = log(L0 + (Linf - L0) .* (1 - exp(-k .* (a - 1))));
+     }
+     
+ for (c in 1:N_cmr) {
+  mu_cmr[c] =  log(
+   L_i[c] + (Linf[site_cmr[c]] - L_i[c]) .* (1 - exp(-k[site_cmr[c]] .* (days[c] / 365))));
   }
  }
-model{
- vector[ A ] log_theta [ J ];
- vector[ A ] lps [ J ];
- 
- log_theta = log( theta );
- 
+model {
  //priors
- target += normal_lpdf( z_b0_Linf | 0 , 1 );
- target += normal_lpdf( z_b0_k | 0 , 1 );
- target += normal_lpdf( z_b0_L0 | 0 , 1 );
+ target += normal_lpdf(b0_L[1] | 3, 0.5); // b0_L0
+ target += normal_lpdf(b0_L[2] | 5.5, 0.25); // b0_Linf
+ target += normal_lpdf(b0_k | -1, 0.5);
  
- target += normal_lpdf( to_vector( r_z ) | 0 , 1 );
+ target += normal_lpdf(to_vector(r_z) | 0, 1);
  
- target += normal_lpdf( z_sigma_VBG | 0 , 1 ) - 1 * normal_lccdf( 0 | 0 , 1 );
+ target += normal_lpdf(sigma_VB | 0, 0.25);
  
- target += normal_lpdf( z_sigma_mix | 0 , 1 ) - 1 * normal_lccdf( 0 | 0 , 1 );
- target += normal_lpdf( z_sigma_cmr | 0 , 1 ) - 1 * normal_lccdf( 0 | 0 , 1 );
+ target += normal_lpdf(sigma_mix | 0, 0.5);
+ target += normal_lpdf(sigma_cmr | 0, 0.5);
 
- target += lkj_corr_cholesky_lpdf( L_Omega_J | eta );
+ target += lkj_corr_cholesky_lpdf(L_Omega | eta);
  
- for( j in 1:J)
-  target += dirichlet_lpdf( theta[ j ] | alpha );
+ for(j in 1:J)
+  target += dirichlet_lpdf(theta[j] | alpha);
  
  //likelihood
- for ( m in 1:N_mix ) {
-  for ( a in 1:A ) { 
-   lps[ site_mix[ m ] , a ] = log_theta[ site_mix[ m ] , a ] + 
-     lognormal_lpdf( y_mix[ m ] |  mu_mix[ site_mix[ m ], a ] , sigma_mix );
+ {
+  vector[A] log_theta [J] = log(theta);
+  vector[A] lps [J];
+ 
+  for (i in 1:N_mix) {
+   for (a in 1:A) { 
+    lps[site_mix[i], a] = log_theta[site_mix[i], a] + 
+     lognormal_lpdf(y_mix[i] |  mu_mix[site_mix[i], a], sigma_mix);
+    }
+   if (prior_only == 0)
+    target += log_sum_exp(lps[site_mix[i]]);
    }
-  if ( prior_only == 0 )
-   target += log_sum_exp( lps[ site_mix[ m ] ] );
   }
  
- if ( prior_only == 0 ) {
-  target += lognormal_lpdf( y_cmr | mu_cmr, sigma_cmr );
+ if (prior_only == 0) {
+  target += lognormal_lpdf(y_cmr | mu_cmr, sigma_cmr);
   }
  }
 generated quantities {
  // for mixture we generate a component identifier "comp"
  // then draw "y_rep_mix" using correct component mu_mix and sigma
  // for cmr we draw "y_rep_cmr" using mu_cmr and sigma
- int< lower=1 , upper=A > comp[ N_mix ];
- vector[ A ] log_theta [ J ];
- vector[ N_mix ] y_rep_mix;
- vector[ N_mix ] log_lik_mix;
- vector[ N_cmr ] y_rep_cmr;
- vector[ N_cmr ] log_lik_cmr;
- vector[ N_mix + N_cmr ] log_lik;
- matrix[ 3 , 3 ] Omega_J;
+ int <lower = 1, upper = A> comp[N_mix];
+ vector[N_mix] y_rep_mix;
+ vector[N_mix] log_lik_mix;
+ vector[N_cmr] y_rep_cmr;
+ vector[N_cmr] log_lik_cmr;
+ vector[N_mix + N_cmr] log_lik;
+ matrix[3, 3] Omega;
+   
+ Omega = multiply_lower_tri_self_transpose(L_Omega);
  
- log_theta = log( theta );  
- Omega_J = multiply_lower_tri_self_transpose( L_Omega_J );
+ {
+  vector[A] log_theta [J] = log(theta); 
+  vector[A] lps [J];
  
- for ( m in 1:N_mix ) {
-  vector[ A ] lps [ J ];
+  for (m in 1:N_mix) {
+   for (a in 1:A) {
+    lps[site_mix[m], a] = log_theta[site_mix[m], a] + 
+      lognormal_lpdf(y_mix[m] |  mu_mix[site_mix[m], a], sigma_mix);
+    }
   
-  for ( a in 1:A ) {
-   lps[ site_mix[ m ] , a ] = log_theta[ site_mix[ m ] , a ] + 
-     lognormal_lpdf( y_mix[ m ] |  mu_mix[ site_mix[ m ] , a ] , sigma_mix );
+   log_lik_mix[m] = log_sum_exp(lps[site_mix[m]]); 
+   comp[m] = categorical_rng(theta[site_mix[m]]);
+   y_rep_mix[m] = lognormal_rng(mu_mix[site_mix[m], comp[m]], sigma_mix);
    }
-  
-  log_lik_mix[ m ] = log_sum_exp( lps[ site_mix[ m ] ] ); 
-  comp[ m ] = categorical_rng( theta[ site_mix[ m ] ] );
-  y_rep_mix[ m ] = lognormal_rng( mu_mix[ site_mix[ m ], comp[ m ] ] , sigma_mix );
   }
  
- for ( c in 1:N_cmr ) {
-  log_lik_cmr[ c ] = lognormal_lpdf( y_cmr[ c ] | mu_cmr[ c ] , sigma_cmr );
-  y_rep_cmr[ c ] = lognormal_rng( mu_cmr[ c ] , sigma_cmr );
+ for (c in 1:N_cmr) {
+  log_lik_cmr[c] = lognormal_lpdf(y_cmr[c] | mu_cmr[c], sigma_cmr);
+  y_rep_cmr[c] = lognormal_rng(mu_cmr[c], sigma_cmr);
   }
  
- log_lik = append_row( log_lik_mix , log_lik_cmr );
+ log_lik = append_row(log_lik_mix, log_lik_cmr);
  }
 ```
 
-# Stan model for integrated (mixture and cmr) VBGF covariates
-Now lets integrate the two models (and data) with covariates.
-```{stan model_4, echo=TRUE, message=FALSE, warning=FALSE, output.var="igm"}
- data{
- int< lower = 1 > A; // number of mixture components (ages)
- int< lower = 1 > N_mix; // n of obs (fish lengths - census data) data)
- int< lower = 1 > N_cmr; // number of observations (fish lengths - cmr data)
- int< lower= 1 > J; // number of sites
- int < lower=1 > site_mix[ N_mix ];
- int < lower=1 > site_cmr[ N_cmr ];
- vector[ N_cmr ] L_i;
- vector[ N_cmr ] days;
- vector[ N_mix ] y_mix;
- vector[ N_cmr ] y_cmr;
- vector [ J ] temp;
- vector [ J ] effD;
- real < lower=1 > eta; // parameter for LKJ prior
- vector < lower=0 > [ A ] alpha; // parameter for dirichlet prior
- int < lower=0 , upper=1 > prior_only; // =1 to get data from prior predictive
-}
+## Fit model to data
+Lets now fit our model to the combined simulated datasets.
 
-parameters{
- simplex[ A ] theta [ J ]; // mixture proportions
- real z_b0_Linf;
- real z_b0_k;
- real z_b0_L0;
- real z_b1_k;
- real z_b1_Linf;
- real z_b2_k;
- real z_b2_Linf;
- real z_b3_k;
- real z_b3_Linf;
- matrix[ 3 , J ] r_z;
- vector < lower=0 > [ 3 ] z_sigma_VBG;
- cholesky_factor_corr[ 3 ] L_Omega_J;
- real < lower=0 > z_sigma_mix;
- real < lower=0 > z_sigma_cmr;
-}
-
-transformed parameters{
- real b0_Linf;
- real b0_k;
- real b0_L0;
- real b1_Linf;
- real b1_k;
- real b2_Linf;
- real b2_k;
- real b3_Linf;
- real b3_k;
- matrix[ J , 3 ] r;
- vector [ J ] L0;
- vector [ J ] Linf;
- vector [ J ] k;
- vector < lower=0 > [ 3 ] sigma_VBG;
- real < lower=0 > sigma_mix;
- real < lower=0 > sigma_cmr;
- ordered[ A ] mu_mix [ J ];
- vector [ N_cmr ] mu_cmr;
-
- b0_Linf = 5.35 + z_b0_Linf * 0.2; //translated: N( 5.35 , 0.2 )
- b0_k = -0.5 + z_b0_k * 0.5; //translated: N( -0.5 , 1 )
- b0_L0 = 3.5 + z_b0_L0 * 0.1; // translated: N( 3.5 , 0.1 ) #2.5, 0.5
- 
- b1_Linf = z_b1_Linf * 0.5; //translated: N( 0 , 0.5 )
- b1_k = z_b1_k * 0.5; //translated: N( 0 , 0.5 )
- b2_Linf = z_b2_Linf * 0.5; //translated: N( 0 , 0.5 )
- b2_k = z_b2_k * 0.5; //translated: N( 0 , 0.5 )
- b3_Linf = z_b3_Linf * 0.3; //translated: N( 0 , 0.3 )
- b3_k = z_b3_k * 0.3; //translated: N( 0 , 0.3 )
-
- sigma_VBG[ 1 ] = z_sigma_VBG[ 1 ] * 0.3; // translated: hN( 0 , 0.3 ) Linf
- sigma_VBG[ 2 ] = z_sigma_VBG[ 2 ] * 0.5; // translated: N( 0 , 1 ) k
- sigma_VBG[ 3 ] = z_sigma_VBG[ 3 ] * 0.05; // translated: N( 0 , 0.05 ) L0
-
- sigma_mix = z_sigma_mix * 0.1; //translated: hN( 0 , 0.1 )
- sigma_cmr = z_sigma_cmr * 0.1; //translated: hN( 0 , 0.25 )
-
- r = ( diag_pre_multiply( sigma_VBG , L_Omega_J ) * r_z )';
-
- Linf = exp( b0_Linf + b1_Linf * temp + b2_Linf * effD + b3_Linf * ( effD .* temp ) + col( r , 1 ) );
- k = exp( b0_k + b1_k * temp + b2_k * effD + b3_k * ( effD .* temp ) + col( r , 2 ) );
- L0 = exp( b0_L0 + col( r , 3 ) );
-
- for ( j in 1:J ) {
-  mu_mix[ j , 1 ] = log( L0[ j ] );
-  for ( a in 2:A ) {
-   mu_mix[ j , a ] = log( L0[ j ] + ( Linf[ j ] - L0[ j ] ) .* ( 1.0 - exp( -k[ j ] .* ( a - 1 )  ) ) );
-   }
-  }
-  
-for ( c in 1:N_cmr ) {
-  mu_cmr[ c ] =  log( L_i[ c ] + ( Linf[ site_cmr[ c ] ] - L_i[ c ] ) .* 
-                  ( 1.0 - exp( -k[ site_cmr[ c ] ] .* ( days[ c ] / 365 ) ) ) );
-  }
-}
-
-model{
- vector[ A ] log_theta [ J ];
- vector[ A ] lps [ J ];
- 
- log_theta = log( theta );
-
-//priors
-target += normal_lpdf( z_b0_Linf | 0 , 1 );
-target += normal_lpdf( z_b0_k | 0 , 1 );
-target += normal_lpdf( z_b1_Linf | 0 , 1 );
-target += normal_lpdf( z_b1_k | 0 , 1 );
-target += normal_lpdf( z_b2_Linf | 0 , 1 );
-target += normal_lpdf( z_b2_k | 0 , 1 );
-target += normal_lpdf( z_b3_Linf | 0 , 1 );
-target += normal_lpdf( z_b3_k | 0 , 1 );
-
-target += normal_lpdf( to_vector( r_z ) | 0 , 1 );
-
-target += normal_lpdf( z_sigma_VBG | 0 , 1 ) - 1 * normal_lccdf( 0 | 0 , 1 );
-
-target += normal_lpdf( z_sigma_cmr | 0 , 1 ) - 1 * normal_lccdf( 0 | 0 , 1 );
-
-target += lkj_corr_cholesky_lpdf( L_Omega_J | eta );
-
- for( j in 1:J)
-  target += dirichlet_lpdf( theta[ j ] | alpha );
-
-//likelihood
- for ( m in 1:N_mix ) {
-  for ( a in 1:A ) { 
-   lps[ site_mix[ m ] , a ] = log_theta[ site_mix[ m ] , a ] + 
-     lognormal_lpdf( y_mix[ m ] |  mu_mix[ site_mix[ m ], a ] , sigma_mix );
-   }
-  if ( prior_only == 0 )
-   target += log_sum_exp( lps[ site_mix[ m ] ] );
-  }
- 
- if ( prior_only == 0 ) {
-  target += lognormal_lpdf( y_cmr | mu_cmr, sigma_cmr );
-  }
- }
-
-generated quantities {
- // for mixture we generate a component identifier "comp"
- // then draw "y_rep_mix" using correct component mu_mix and sigma
- // for cmr we draw "y_rep_cmr" using mu_cmr and sigma
- int< lower=1 , upper=A > comp[ N_mix ];
- vector[ A ] log_theta [ J ];
- vector[ N_mix ] y_rep_mix;
- vector[ N_mix ] log_lik_mix;
- vector[ N_cmr ] y_rep_cmr;
- vector[ N_cmr ] log_lik_cmr;
- vector[ N_mix + N_cmr ] log_lik;
- matrix[ 3 , 3 ] Omega_J;
- 
- log_theta = log( theta );  
- Omega_J = multiply_lower_tri_self_transpose( L_Omega_J );
- 
- for ( m in 1:N_mix ) {
-  vector[ A ] lps [ J ];
-  
-  for ( a in 1:A ) {
-   lps[ site_mix[ m ] , a ] = log_theta[ site_mix[ m ] , a ] + 
-     lognormal_lpdf( y_mix[ m ] |  mu_mix[ site_mix[ m ] , a ] , sigma_mix );
-   }
-  
-  log_lik_mix[ m ] = log_sum_exp( lps[ site_mix[ m ] ] ); 
-  comp[ m ] = categorical_rng( theta[ site_mix[ m ] ] );
-  y_rep_mix[ m ] = lognormal_rng( mu_mix[ site_mix[ m ], comp[ m ] ] , sigma_mix );
-  }
- 
- for ( c in 1:N_cmr ) {
-  log_lik_cmr[ c ] = lognormal_lpdf( y_cmr[ c ] | mu_cmr[ c ] , sigma_cmr );
-  y_rep_cmr[ c ] = lognormal_rng( mu_cmr[ c ] , sigma_cmr );
-  }
- 
- log_lik = append_row( log_lik_mix , log_lik_cmr );
- }
-
-```
-
-
-# Fit model to observed data
-Lets now fit our model to the observational data, again looking at 5 age classes.
-
-## Data list for fit to data
+### Data list for fit to data
 ```{r stan_data_list_fit_4}
-stan_dataList_igm_fit <- list(N_mix = nrow(df_mixture),
-                              N_cmr = nrow(df_cmr),
-                              J = max(df_mixture$site_year),
-                              site_mix = df_mixture$site_year,
-                              site_cmr = df_cmr$site_year,
-                              y_mix = df_mixture$length,
-                              y_cmr = df_cmr$length_r,
-                              L_i = df_cmr$length_c,
-                              days = df_cmr$days,
-                              effD = MyNorm(df_sites$effD),
-                              temp = MyNorm(df_sites$temp),
+stan_dataList_igm_fit <- list(N_mix = stan_dataList_mix_fit$N,
+                              N_cmr = stan_dataList_cmr_fit$N,
+                              J = stan_dataList_cmr_fit$N,
+                              site_mix = stan_dataList_mix_fit$site,
+                              site_cmr = stan_dataList_cmr_fit$site,
+                              y_mix = stan_dataList_mix_fit$y,
+                              y_cmr = stan_dataList_cmr_fit$y,
+                              L_i = stan_dataList_cmr_fit$L_i,
+                              days = stan_dataList_cmr_fit$days,
                               eta = 2, 
                               A = 5,
-                              alpha = rep( 2 , 5 ),
+                              alpha = rep(1, 5),
                               prior_only = 0
                               )
 ```
 
-## Run the model with observational data
-```{r fit_stan_model_4, echo=TRUE, cache=TRUE}
+### Run the model with observational data
+```{r fit_stan_model_4, eval=FALSE, include=TRUE}
+# takes about 4539s
 igm_fit_1 <- sampling(object=igm,
                         data=stan_dataList_igm_fit,
-                        chains=5,
-                        iter=2000,
-                        cores=5,
+                        chains=4,
+                        iter=3000,
+                        cores=4,
                         thin=1#,
                         #control = list(
                         #  adapt_delta=0.99, #default=0.8
                         #  max_treedepth =12 #default= 10
                         #  )
                         )
+
+save(igm_fit_1, file = "./../modelFiles/igm_fit_1.rda")
 ```
 
-## Pairs plot of the posteriors:
+### Pairs plot of the posteriors:
 ```{r pairs_summary_fit_3, echo=FALSE, fig.align='center', fig.width=8, fig.height=8}
 pairs(igm_fit_1, 
-      pars=c("b0_Linf",
-             "b1_Linf",
-             "b2_Linf",
-             "b3_Linf",
+      pars=c("b0_L",
              "b0_k",
-             "b1_k",
-             "b2_k",
-             "b3_k",
-             "sigma_VBG",
+             "sigma_VB",
+             "sigma_mix",
              "sigma_cmr",
              "lp__"),
       log=TRUE
@@ -1145,114 +984,185 @@ pairs(igm_fit_1,
 ### Summarize the parameters
 ```{r print_summary_3, echo=TRUE}
 print(igm_fit_1, 
-      pars=c("b0_Linf",
-             "b1_Linf",
-             "b2_Linf",
-             "b3_Linf",
+      pars=c("b0_L",
              "b0_k",
-             "b1_k",
-             "b2_k",
-             "b3_k",
-             "sigma_VBG",
+             "sigma_VB",
+             "sigma_mix",
              "sigma_cmr",
-             "Omega_J",
+             "Omega",
              "lp__")
       )
 ```
 
-### Compare prior model to observational data
-Compare prior predictive distribution (black) to observational data distribution (red): 
-For the CMR component.
-```{r ppd_summary_3, echo=TRUE, fig.align='center', fig.height=4, fig.width=6, message=FALSE, warning=FALSE}
-
-la_fit_1 <- rstan::extract( igm_fit_1 ) 
-
-bayesplot::ppc_stat( y = df_cmr$length_r ,
-                     yrep = la_fit_1$y_rep_cmr , 
-                     stat = mean ) + ggtitle("CMR")
-
-bayesplot::ppc_stat( y = df_cmr$length_r , 
-                     yrep = la_fit_1$y_rep_cmr , 
-                     stat = sd ) + ggtitle("CMR")
-
-bayesplot::ppc_stat( y = df_cmr$length_r , 
-                     yrep = la_fit_1$y_rep_cmr , 
-                     stat = max ) + ggtitle("CMR")
-
-bayesplot::ppc_stat( y = df_cmr$length_r , 
-                     yrep = la_fit_1$y_rep_cmr , 
-                     stat = min ) + ggtitle("CMR")
-
-s <- as.vector(sample(1:nrow(df_cmr), 100, replace = F ))#draw random 100 rows
-
-#bayesplot::ppc_dens_overlay( y = df_mixture$length , yrep = la_prior$y_rep_mix[ s , ] )
-
-bayesplot::ppc_intervals( y = df_cmr$length_r[ s ], yrep = la_fit_1$y_rep_cmr[  , s ] ) +
-  ggtitle("CMR")
-
-rm(s)
-
-plot( density( la_fit_1$y_rep_cmr[ 1 , ] ) , lwd=2 , main= "CMR" , ylim=c( 0, 0.02 ), xlim=c( 0 , 500 ) , col='gray' )
-for ( i in 1:200 ){
-  lines( density( la_fit_1$y_rep_cmr[ sample( 1:dim(la_fit_1$y_rep_cmr)[1], 1 ) , ] ) , lwd=2 , col='gray' )
-  }
-lines( density ( df_cmr$length_r ) , col='red' , lwd=2 )
-
+### Estimates vs. true values
+Did we recover the parameters of the simulation? True values are the red vertical lines.
+```{r extract_posterior_igm}
+la_igm_1 <- extract(igm_fit_1)
 ```
 
-For the mixture component.
-```{r ppd_summary_4, echo=TRUE, fig.align='center', fig.height=4, fig.width=6, message=FALSE, warning=FALSE}
 
-bayesplot::ppc_stat( y = df_mixture$length ,
-                     yrep = la_fit_1$y_rep_mix , 
-                     stat = mean ) + ggtitle("Mixture")
+```{r posterior_vs_true_betas_igm, echo=TRUE, fig.align='center', fig.asp = 0.5, fig.width=6}
+p <- igm_fit_1$b0_L %>% data.frame() %>%
+  rename(b_L0 = X1, 
+         b_Linf = X2) %>%
+  mutate(b_k = igm_fit_1$b0_k) %>%
+  pivot_longer(cols = c(b_L0, b_Linf, b_k),
+               names_to = "parameter",
+               values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 0.01) +
+  facet_wrap(~ parameter, scales = "free_x") +
+  ylab("Percent of total posterior draws")
 
-bayesplot::ppc_stat( y = df_mixture$length , 
-                     yrep = la_fit_1$y_rep_mix , 
-                     stat = sd ) + ggtitle("Mixture")
+tv <- data.frame(parameter = c("b_L0", "b_Linf", "b_k"), tv = c(b0_L0, b0_Linf,  b0_k))
+p + geom_vline(aes(xintercept = tv), tv, color = "red", linewidth = 2)
+```
 
-bayesplot::ppc_stat( y = df_mixture$length , 
-                     yrep = la_fit_1$y_rep_mix , 
-                     stat = max ) + ggtitle("Mixture")
+```{r posterior_vs_true_sigma_igm, echo=TRUE, fig.align='center', fig.asp = 0.5, fig.width=6}
+p <- igm_fit_1$sigma_VB %>% data.frame() %>%
+  rename(sigma_L0 = X1, 
+         sigma_Linf = X2,
+         sigma_k = X3) %>%
+  mutate(sigma_mix = igm_fit_1$sigma_mix,
+         sigma_cmr = igm_fit_1$sigma_cmr) %>%
+  pivot_longer(cols = c(sigma_L0, sigma_Linf, sigma_k, sigma_mix, sigma_cmr),
+               names_to = "parameter",
+               values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 0.0025) +
+  facet_wrap(~ parameter, scales = "free", ncol = 3) +
+  ylab("Percent of total posterior draws")
 
-bayesplot::ppc_stat( y = df_mixture$length , 
-                     yrep = la_fit_1$y_rep_mix , 
-                     stat = min ) + ggtitle("Mixture")
+tv <- data.frame(parameter = c("sigma_L0", "sigma_Linf", "sigma_k", "sigma_mix", "sigma_cmr"), tv = c(0.2, 0.2, 0.2, 0.15, 0.15)) # fix
+p + geom_vline(aes(xintercept = tv), tv, color = "red", linewidth = 2)
+```
 
-s <- as.vector(sample(1:nrow(df_mixture), 100, replace = F ))#draw random 100 rows
+```{r posterior_vs_true_omega, echo=TRUE, fig.align='center', fig.asp = 0.5, fig.width=6}
+p <- igm_fit_1$Omega[, 1, 2] %>% data.frame() %>%
+  rename(Omega_Linf_k = ".") %>%
+  ggplot(aes(x = Omega_Linf_k)) +
+  geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 0.05) +
+  ylab("Percent of total posterior draws") +
+  xlab("value") +
+  ggtitle(expression(Omega[Linf]))
+
+p + geom_vline(xintercept = Omega[1,2], color = "red", linewidth = 2)
+```
+
+### Compare predictions to characteristics of simulated data
+Compare posterior predictive distribution (black) to observed (simulated in this case) data distribution (red) for the length-frequency data: 
+```{r ppd_summary_1, echo=TRUE, fig.align='center', fig.asp = 0.6, fig.width=5}
+bayesplot::ppc_stat(y = stan_dataList_igm_fit$y_mix, 
+                    yrep = igm_fit_1$y_rep_mix, 
+                    stat = mean,
+                    binwidth = 1)
+
+bayesplot::ppc_stat(y = stan_dataList_igm_fit$y_mix, 
+                    yrep = igm_fit_1$y_rep_mix, 
+                    stat = sd,
+                    binwidth = 1)
+
+bayesplot::ppc_stat(y = stan_dataList_igm_fit$y_mix, 
+                    yrep = igm_fit_1$y_rep_mix, 
+                    stat = max,
+                    binwidth = 1)
+
+bayesplot::ppc_stat(y = stan_dataList_igm_fit$y_mix, 
+                    yrep = igm_fit_1$y_rep_mix, 
+                    stat = min,
+                    binwidth = 1)
+
+s <- as.vector(sample(1:length(stan_dataList_igm_fit$y_mix), 100, replace = F))#draw random 100 rows
 
 #bayesplot::ppc_dens_overlay( y = df_mixture$length , yrep = la_prior$y_rep_mix[ s , ] )
 
-bayesplot::ppc_intervals( y = df_mixture$length[ s ], yrep = la_fit_1$y_rep_mix[  , s ] ) +
-  ggtitle("Mixture")
+bayesplot::ppc_intervals(y = stan_dataList_igm_fit$y_mix[s], yrep = igm_fit_1$y_rep_mix[, s])
 
 rm(s)
 
-plot( density( la_fit_1$y_rep_mix[ 1 , ] ) , lwd=2 , main= "Mixture" , ylim=c( 0, 0.02 ), xlim=c( 0 , 500 ) , col='gray' )
-for ( i in 1:200 ){
-  lines( density( la_fit_1$y_rep_mix[ sample( 1:dim(la_fit_1$y_rep_mix)[1], 1 ) , ] ) , lwd=2 , col='gray' )
+plot(density(igm_fit_1$y_rep_mix[1, ]), lwd = 2, main = "", ylim=c(0, 0.015), xlim=c(0, 500), col = 'gray')
+for (i in 1:200){
+  lines(density(igm_fit_1$y_rep_mix[sample(1:dim(igm_fit_1$y_rep_mix)[1], 1), ]), lwd=2, col = 'gray')
   }
-lines( density ( df_mixture$length ) , col='red' , lwd=2 )
+lines(density(stan_dataList_igm_fit$y_mix), col = 'red', lwd = 2)
+```
+
+Compare posterior predictive distribution (black) to observed (simulated in this case) data distribution (red) for the capture-mark-recapture data: 
+```{r ppd_summary_1, echo=TRUE, fig.align='center', fig.asp = 0.6, fig.width=5}
+bayesplot::ppc_stat(y = stan_dataList_igm_fit$y_cmr, 
+                    yrep = igm_fit_1$y_rep_cmr, 
+                    stat = mean,
+                    binwidth = 1)
+
+bayesplot::ppc_stat(y = stan_dataList_igm_fit$y_cmr, 
+                    yrep = igm_fit_1$y_rep_cmr, 
+                    stat = sd,
+                    binwidth = 1)
+
+bayesplot::ppc_stat(y = stan_dataList_igm_fit$y_cmr, 
+                    yrep = igm_fit_1$y_rep_cmr, 
+                    stat = max,
+                    binwidth = 1)
+
+bayesplot::ppc_stat(y = stan_dataList_igm_fit$y_cmr, 
+                    yrep = igm_fit_1$y_rep_cmr, 
+                    stat = min,
+                    binwidth = 1)
+
+s <- as.vector(sample(1:length(stan_dataList_igm_fit$y_cmr), 100, replace = F))#draw random 100 rows
+
+#bayesplot::ppc_dens_overlay( y = df_mixture$length , yrep = la_prior$y_rep_mix[ s , ] )
+
+bayesplot::ppc_intervals(y = stan_dataList_igm_fit$y_cmr[s], yrep = igm_fit_1$y_rep_cmr[, s])
+
+rm(s)
+
+plot(density(igm_fit_1$y_rep_cmr[1, ]), lwd = 2, main = "", ylim=c(0, 0.015), xlim=c(0, 500), col = 'gray')
+for (i in 1:200){
+  lines(density(igm_fit_1$y_rep_cmr[sample(1:dim(igm_fit_1$y_rep_cmr)[1], 1), ]), lwd=2, col = 'gray')
+  }
+lines(density(stan_dataList_igm_fit$y_cmr), col = 'red', lwd = 2)
 ```
 
 ### Leave-one-out cross validation with PSIS-LOO
 ```{r loo_igm, fig.align='center', fig.height=4, fig.width=6 }
+log_lik_igm_1 <- loo::extract_log_lik(igm_fit_1, 
+                                      parameter_name="log_lik", 
+                                      merge_chains = FALSE)
 
-log_lik_igm_1 <- loo::extract_log_lik( igm_fit_1 , 
-                                  parameter_name="log_lik", 
-                                  merge_chains = FALSE )
+r_eff_igm_1 <- loo::relative_eff(log_lik_igm_1, cores = 1)
 
-r_eff_igm_1 <- loo::relative_eff( log_lik_igm_1 , cores = 1 )
-
-loo_igm_1 <- loo::loo( log_lik_igm_1, 
-                  r_eff= r_eff_igm_1 , 
-                  cores = 1 )
-print( loo_igm_1 )
-
-plot( loo_igm_1 , label_points = T )
-
+loo_igm_1 <- loo::loo(log_lik_igm_1, 
+                  r_eff= r_eff_igm_1,
+                  save_psis = TRUE,
+                  cores = 1)
+print(loo_igm_1)
+plot(loo_igm_1, label_points = T)
 ```
 
+#### LOO-PIT calibration
+Now lets use the loo calculations to graphically assess calibration. 
 
+First, we'll need to extract the weights from the LOO PSIS object.
+```{r extract_igm_1}
+wts_igm_1 <- weights(loo_igm_1$psis_object)
+```
 
+Now we can plot the LOO-PIT overlay. If well-calibrated, the PIT line should fall within the simulated draws of the uniform distribution (blue lines).
+
+For the length-frequency component
+```{r loo_pit_model_2, warning=FALSE, fig.align='center', fig.width=6, fig.asp=0.7}
+bayesplot::ppc_loo_pit_overlay(y = stan_dataList_igm_fit$y_mix, 
+                    yrep = la_igm_1$y_rep_mix,
+                    lw = wts_igm_1[, 1:1000],
+                    samples = 50)
+```
+
+For the capture-mark-recapture component
+```{r loo_pit_model_2, warning=FALSE, fig.align='center', fig.width=6, fig.asp=0.7}
+bayesplot::ppc_loo_pit_overlay(y = stan_dataList_igm_fit$y_cmr, 
+                    yrep = la_igm_1$y_rep_cmr,
+                    lw = wts_igm_1[, 1001:2000],
+                    samples = 50)
+```
 
